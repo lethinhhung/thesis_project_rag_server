@@ -70,6 +70,7 @@ def ingest(payload: IngestPayload):
             {
                 "id": f"{payload.documentId}-{i}",
                 "text": chunk,
+                'documentId': payload.documentId,
             } for i, chunk in enumerate(chunks)
         ]
 
@@ -115,6 +116,16 @@ def question(payload: QuestionPayload):
     ],
     model="llama-3.3-70b-versatile",
     )
-    return chat_completion
+
+    response_dict = chat_completion.model_dump()
+    response_dict["choices"][0]["message"]["documents"] = [
+        {
+            "id": hit["_id"],
+            "text": hit["fields"]["text"],
+            "documentId": hit["fields"]["documentId"],
+            "score": hit["_score"]
+        } for hit in results['result']['hits']
+    ]
+    return response_dict
 
     
