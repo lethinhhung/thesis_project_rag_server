@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import requests
 from pinecone import Pinecone, ServerlessSpec
 from groq import Groq
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 import os
 from dotenv import load_dotenv
@@ -21,6 +22,12 @@ index_name = os.getenv("PINECONE_INDEX_NAME")
 
 client = Groq(
     api_key=os.environ.get("GROQ_API_KEY"),
+)
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,
+    chunk_overlap=50,
+    separators=["\n\n", "\n", ".", " ", ""]
 )
 
 
@@ -43,45 +50,41 @@ def hello_world():
     return {"message": "Hello World!"}
 
 class IngestPayload(BaseModel):
-    text: str
-    metadata: dict[str, str]
+    documentId: str
+    userId: str
+    document: str
+    
 
 class QuestionPayload(BaseModel):
+    userId: str
     query: str
     
     
 
 @app.post("/ingest")
 def ingest(payload: IngestPayload):
-    # Bước 1: Gọi Groq API để tạo embedding
-    # response = requests.post(
-    #     "https://api.groq.com/v1/embeddings",
-    #     headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}"},
-    #     json={
-    #         "model": "nomic-embed-text",
-    #         "input": payload.text
-    #     }
-    # )
-    # print(response.json())
-    # embedding = response.json()['data'][0]['embedding']
+        
+        chunks = text_splitter.split_text(payload.document)
 
-    # Bước 2: Lưu vào Pinecone
-    # index.upsert([
-    #     ("doc-" + payload.metadata["filename"], embedding, payload.metadata)
-    # ])
-
-        metadata_list = [f"{k}:{v}" for k, v in payload.metadata.items()]
         records = [
             {
-                "_id": "doc-" + payload.metadata["filename"],
-                "text": payload.text,
-                "metadata": metadata_list
-            }
+                "id": f"{payload.documentId}-{i}",
+                "text": chunk,
+            } for i, chunk in enumerate(chunks)
         ]
 
-        index.upsert_records(index_name, records)
+        # records = [
+        #     {
+        #         "id": "doc-" + payload.documentId,
+        #         "text": payload.text,
+
+        #     }
+        # ]
+
+        index.upsert_records(payload.userId, records)
 
         return {"status": "done"}
+
 
 @app.post("/question")
 def question(payload: QuestionPayload):
@@ -89,7 +92,7 @@ def question(payload: QuestionPayload):
 
     # Search the dense index
     results = index.search(
-        namespace=index_name,
+        namespace=payload.userId,
         query={
             "top_k": 10,
             "inputs": {
@@ -106,7 +109,7 @@ def question(payload: QuestionPayload):
     messages=[
         {
             "role": "user",
-            "content": "Dựa trên các đoạn văn sau, hãy trả lời câu hỏi: " + payload.query 
+            "content": "Dựa trên các đoạn văn sau, hãy trả lời ngắn gọn câu hỏi: " + payload.query 
             + "\n\n" + "\n".join([hit['fields']['text'] for hit in results['result']['hits']]),
         }
     ],
