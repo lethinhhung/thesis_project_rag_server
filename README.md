@@ -61,7 +61,7 @@ GROQ_API_KEY=your_grok_api_key
 5. Run the server
 
 ```bash
-uvicon server:app
+uvicorn server:app
 ```
 
 ## Project Structure
