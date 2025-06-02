@@ -1,37 +1,38 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 import requests
 from pinecone import Pinecone, ServerlessSpec
 from groq import Groq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+from models import IngestPayload, QuestionPayload, DeletePayload, ChatCompletionPayload
 
+# Load environment variables
+load_dotenv()
 app = FastAPI()
 
 # Pinecone init
 pc = Pinecone(
     api_key=os.getenv("PINECONE_API_KEY")
-    # environment=os.getenv("PINECONE_ENVIRONMENT")
 )
 
 index_name = os.getenv("PINECONE_INDEX_NAME")
 
+# Groq init
 client = Groq(
     api_key=os.environ.get("GROQ_API_KEY"),
 )
 
+# Define the text splitter
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=500,
     chunk_overlap=50,
     separators=["\n\n", "\n", ".", " ", ""]
 )
 
-
-
+# Check if the index exists, if not create it
 if not pc.has_index(index_name):
     pc.create_index_for_model(
         name=index_name,
@@ -43,23 +44,14 @@ if not pc.has_index(index_name):
         }
     )
 
+# Connect to the index
 index = pc.Index(index_name)
 
+
+# Define endpoints
 @app.get("/")
 def hello_world():
     return {"message": "Hello World!"}
-
-class IngestPayload(BaseModel):
-    documentId: str
-    userId: str
-    document: str
-    
-
-class QuestionPayload(BaseModel):
-    userId: str
-    query: str
-    
-    
 
 @app.post("/ingest")
 def ingest(payload: IngestPayload):
@@ -86,7 +78,6 @@ def ingest(payload: IngestPayload):
 
         return {"status": "done"}
 
-
 @app.post("/question")
 def question(payload: QuestionPayload):
     # Define the query
@@ -105,6 +96,7 @@ def question(payload: QuestionPayload):
     # Print the results
     for hit in results['result']['hits']:
             print(f"id: {hit['_id']:<5} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
+            
 
     chat_completion = client.chat.completions.create(
     messages=[
@@ -128,4 +120,18 @@ def question(payload: QuestionPayload):
     ]
     return response_dict
 
-    
+@app.post("/delete-document")
+def delete_document(payload: DeletePayload):
+
+    ids_to_delete = list(index.list(prefix=payload.documentId, namespace=payload.userId))
+
+    if not ids_to_delete:
+        raise HTTPException(status_code=404, detail="Không tìm thấy vectors nào với documentId này.")
+
+    # Bước 2: Xoá vector theo ID
+    index.delete(
+        namespace=payload.userId,
+        ids=ids_to_delete
+    )
+
+    return {"deleted_ids": ids_to_delete}

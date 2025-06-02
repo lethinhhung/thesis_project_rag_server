@@ -58,6 +58,12 @@ PINECONE_INDEX_NAME=your_pinecone_index_name
 GROQ_API_KEY=your_grok_api_key
 ```
 
+5. Run the server
+
+```bash
+uvicon server:app
+```
+
 ## Project Structure
 
 ```
