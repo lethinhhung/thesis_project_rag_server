@@ -53,7 +53,7 @@ index = pc.Index(index_name)
 def hello_world():
     return {"message": "Hello World!"}
 
-@app.post("/ingest")
+@app.post("/v1/ingest")
 def ingest(payload: IngestPayload):
         
         chunks = text_splitter.split_text(payload.document)
@@ -66,19 +66,21 @@ def ingest(payload: IngestPayload):
             } for i, chunk in enumerate(chunks)
         ]
 
-        # records = [
-        #     {
-        #         "id": "doc-" + payload.documentId,
-        #         "text": payload.text,
 
-        #     }
-        # ]
+        # index.upsert_records(payload.userId, records)
 
-        index.upsert_records(payload.userId, records)
+        # return {"status": "done"}
+        # Batch size of 90 (below Pinecone's limit of 96)
+        batch_size = 90
+    
+        # Split records into batches and upsert
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i + batch_size]
+            index.upsert_records(payload.userId, batch)
 
-        return {"status": "done"}
+        return {"status": "done", "chunks_processed": len(records)}
 
-@app.post("/question")
+@app.post("/v1/question")
 def question(payload: QuestionPayload):
     # Define the query
 
@@ -102,7 +104,7 @@ def question(payload: QuestionPayload):
     messages=[
         {
             "role": "user",
-            "content": "Dựa trên các đoạn văn sau, hãy trả lời ngắn gọn câu hỏi: " + payload.query 
+            "content": "Dựa trên các đoạn văn sau, hãy trả lời câu hỏi (hãy thêm các emoji để trực quan hơn, sử dụng dạng markdown để react-markdown định dạng): " + payload.query 
             + "\n\n" + "\n".join([hit['fields']['text'] for hit in results['result']['hits']]),
         }
     ],
@@ -120,7 +122,7 @@ def question(payload: QuestionPayload):
     ]
     return response_dict
 
-@app.post("/delete-document")
+@app.post("/v1/delete-document")
 def delete_document(payload: DeletePayload):
 
     ids_to_delete = list(index.list(prefix=payload.documentId, namespace=payload.userId))
