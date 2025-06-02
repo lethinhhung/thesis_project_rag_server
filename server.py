@@ -55,12 +55,7 @@ def hello_world():
 
 @app.head("/v1/keep-alive")
 def health_check():
-    try:
-        # Check if the index is healthy
-        index.describe()
         return {"status": "healthy"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/v1/ingest")
 def ingest(payload: IngestPayload):
