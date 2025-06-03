@@ -4,6 +4,7 @@ class IngestPayload(BaseModel):
     documentId: str
     userId: str
     document: str
+    title: str
     
 
 class QuestionPayload(BaseModel):

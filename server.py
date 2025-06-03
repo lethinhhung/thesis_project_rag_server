@@ -67,6 +67,7 @@ def ingest(payload: IngestPayload):
                 "id": f"{payload.documentId}-{i}",
                 "text": chunk,
                 'documentId': payload.documentId,
+                'title': payload.title,
             } for i, chunk in enumerate(chunks)
         ]
 
@@ -92,7 +93,7 @@ def question(payload: QuestionPayload):
     results = index.search(
         namespace=payload.userId,
         query={
-            "top_k": 10,
+            "top_k": 15,
             "inputs": {
                 'text': payload.query
             }
@@ -101,7 +102,7 @@ def question(payload: QuestionPayload):
 
     # Print the results
     for hit in results['result']['hits']:
-            print(f"id: {hit['_id']:<5} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
+            print(f"id: {hit['_id']:<5} | documentId: {hit['fields']['documentId']} | title: {hit['fields']['title']} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
             
 
     chat_completion = client.chat.completions.create(
@@ -114,10 +115,16 @@ def question(payload: QuestionPayload):
                 "Nếu thông tin không đủ, hãy trả lời dựa trên kiến thức của bạn và ghi rõ điều đó.\n\n"
                 f"**Câu hỏi:** {payload.query}\n\n"
                 "### 📚 Đoạn văn tham khảo:\n"
-                + "\n---\n".join([hit['fields']['text'] for hit in results['result']['hits']]) +
-                "\n\n"
+                # + "\n---\n".join([hit['fields']['text'] for hit in results['result']['hits']]) +
+                # "\n\n"
+                + "\n---\n".join([
+                     f"**Đoạn văn {i+1} (Document title: {hit['fields']['title']}):**\n"
+                     f"{hit['fields']['text']}\n"
+                     for i, hit in enumerate(results['result']['hits'])
+                     ]) +
                 "### ✏️ Ghi chú khi trả lời:\n"
                 "- Trình bày câu trả lời bằng [Markdown] để hệ thống `react-markdown` có thể hiển thị tốt.\n"
+                "- Đảm bảo mỗi thông tin được trích dẫn đều có tham chiếu đến **Document title** tương ứng (ví dụ: `[Tài liệu LLM]`m chỉ cần tên tài liệu, không cần ghi Document title).\n"
                 "- Thêm emoji phù hợp để làm nổi bật nội dung chính 🧠📌💡.\n"
                 "- Nếu câu trả lời không thể rút ra từ đoạn văn, hãy bắt đầu bằng câu: `⚠️ Không tìm thấy thông tin trong đoạn văn, câu trả lời được tạo từ kiến thức nền.`"
             )
