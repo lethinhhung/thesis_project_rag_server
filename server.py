@@ -162,17 +162,78 @@ def delete_document(payload: DeletePayload):
 
 @app.post("/v1/chat/completions")
 def create_chat_completion(payload: ChatCompletionPayload):
-    try:
-        # Convert Pydantic Message models to dictionaries if payload.messages contains them
+
+    if not payload.isUseKnowledge:
+        try:
+            # Convert Pydantic Message models to dictionaries if payload.messages contains them
+            messages_for_api = [message.model_dump() for message in payload.messages]
+
+            chat_completion = client.chat.completions.create(
+                messages=messages_for_api,
+                model=payload.model or "deepseek-r1-distill-llama-70b"  # Use model from payload or default
+                # You can pass other parameters from payload to the API call if needed
+                # e.g., temperature=payload.temperature
+            )
+            return chat_completion.model_dump()
+        except Exception as e:
+            print(f"Error during chat completion: {e}") # For server-side logging
+            raise HTTPException(status_code=500, detail=str(e))
+        
+    else:
+         
         messages_for_api = [message.model_dump() for message in payload.messages]
 
-        chat_completion = client.chat.completions.create(
-            messages=messages_for_api,
-            model=payload.model or "deepseek-r1-distill-llama-70b"  # Use model from payload or default
-            # You can pass other parameters from payload to the API call if needed
-            # e.g., temperature=payload.temperature
+          # Search the dense index
+        results = index.search(
+            namespace=payload.userId,
+            query={
+                "top_k": 15,
+                "inputs": {
+                    'text': payload.messages[len(payload.messages) - 1].content
+                }
+            }
         )
-        return chat_completion.model_dump()
-    except Exception as e:
-        print(f"Error during chat completion: {e}") # For server-side logging
-        raise HTTPException(status_code=500, detail=str(e))
+
+        # Print the results
+        for hit in results['result']['hits']:
+                print(f"id: {hit['_id']:<5} | documentId: {hit['fields']['documentId']} | title: {hit['fields']['title']} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
+                
+
+        chat_completion = client.chat.completions.create(
+            messages=messages_for_api + [
+                {
+                    "role": "user",
+                    "content": (
+                        "### 📘 Yêu cầu:\n"
+                        f"Trả lời câu hỏi sau bằng cách dựa trên các đoạn văn bên dưới. "
+                        "Nếu thông tin không đủ, hãy trả lời dựa trên kiến thức của bạn và ghi rõ điều đó.\n\n"
+                        f"**Câu hỏi:** {payload.messages[len(payload.messages) - 1].content}\n\n"
+                        "### 📚 Đoạn văn tham khảo:\n"
+                        + "\n---\n".join([
+                            f"**Đoạn văn {i+1} (Document title: {hit['fields']['title']}):**\n"
+                            f"{hit['fields']['text']}\n"
+                            for i, hit in enumerate(results['result']['hits'])
+                        ]) +
+                        "### ✏️ Ghi chú khi trả lời:\n"
+                        "- Trình bày câu trả lời bằng [Markdown] để hệ thống `react-markdown` có thể hiển thị tốt.\n"
+                        "- Đảm bảo mỗi thông tin được trích dẫn đều có tham chiếu đến **Document title** tương ứng (ví dụ: `[Tài liệu LLM]`m chỉ cần tên tài liệu, không cần ghi Document title).\n"
+                        "- Thêm emoji phù hợp để làm nổi bật nội dung chính 🧠📌💡.\n"
+                        "- Nếu câu trả lời không thể rút ra từ đoạn văn, hãy bắt đầu bằng câu: `⚠️ Không tìm thấy thông tin trong đoạn văn, câu trả lời được tạo từ kiến thức nền.`"
+                    )
+                }
+            ],
+            model=payload.model or "deepseek-r1-distill-llama-70b",
+        )
+
+        response_dict = chat_completion.model_dump()
+
+        response_dict["choices"][len(response_dict["choices"])-1]["message"]["documents"] = [
+            {
+                "id": hit["_id"],
+                "text": hit["fields"]["text"],
+                "documentId": hit["fields"]["documentId"],
+                "score": hit["_score"]
+            } for hit in results['result']['hits']
+        ]
+        return response_dict
+

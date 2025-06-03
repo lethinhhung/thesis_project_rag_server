@@ -22,3 +22,5 @@ class ChatMessage(BaseModel):
 class ChatCompletionPayload(BaseModel):
     messages: List[ChatMessage]
     model: Optional[str] = "deepseek-r1-distill-llama-70b"
+    userId: str
+    isUseKnowledge: Optional[bool] = False
