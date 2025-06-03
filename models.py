@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import List, Optional
 
 class IngestPayload(BaseModel):
     documentId: str
@@ -15,7 +16,9 @@ class DeletePayload(BaseModel):
     documentId: str
     userId: str
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 class ChatCompletionPayload(BaseModel):
-    userId: str
-    query: str
-    messages: list[dict]
+    messages: List[ChatMessage]
+    model: Optional[str] = "deepseek-r1-distill-llama-70b"

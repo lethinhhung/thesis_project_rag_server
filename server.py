@@ -159,3 +159,20 @@ def delete_document(payload: DeletePayload):
     )
 
     return {"deleted_ids": ids_to_delete}
+
+@app.post("/v1/chat/completions")
+def create_chat_completion(payload: ChatCompletionPayload):
+    try:
+        # Convert Pydantic Message models to dictionaries if payload.messages contains them
+        messages_for_api = [message.model_dump() for message in payload.messages]
+
+        chat_completion = client.chat.completions.create(
+            messages=messages_for_api,
+            model=payload.model or "deepseek-r1-distill-llama-70b"  # Use model from payload or default
+            # You can pass other parameters from payload to the API call if needed
+            # e.g., temperature=payload.temperature
+        )
+        return chat_completion.model_dump()
+    except Exception as e:
+        print(f"Error during chat completion: {e}") # For server-side logging
+        raise HTTPException(status_code=500, detail=str(e))
