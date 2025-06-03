@@ -168,8 +168,23 @@ def create_chat_completion(payload: ChatCompletionPayload):
             # Convert Pydantic Message models to dictionaries if payload.messages contains them
             messages_for_api = [message.model_dump() for message in payload.messages]
 
+            last_message = messages_for_api[-1] if messages_for_api else None
+            # Remove the last message since we'll handle it separately
+            messages_for_api = messages_for_api[:-1]
+
             chat_completion = client.chat.completions.create(
-                messages=messages_for_api,
+                messages=messages_for_api + [
+                     {
+                        "role": "user",
+                        "content": (
+                            "### 📘 Yêu cầu:\n"
+                            f"Trả lời câu hỏi sau: {last_message['content']}\n\n"
+                            "### ✏️ Ghi chú khi trả lời:\n"
+                            "- Trình bày câu trả lời bằng [Markdown] để hệ thống `react-markdown` có thể hiển thị tốt.\n"
+                            "- Thêm emoji phù hợp để làm nổi bật nội dung chính 🧠📌💡.\n" 
+                        )
+                     }
+                ],
                 model=payload.model or "deepseek-r1-distill-llama-70b"  # Use model from payload or default
                 # You can pass other parameters from payload to the API call if needed
                 # e.g., temperature=payload.temperature
