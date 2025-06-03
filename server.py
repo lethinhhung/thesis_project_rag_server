@@ -123,7 +123,7 @@ def question(payload: QuestionPayload):
             )
         }
     ],
-    model="llama-3.3-70b-versatile",
+    model="deepseek-r1-distill-llama-70b",
     )
 
     response_dict = chat_completion.model_dump()
