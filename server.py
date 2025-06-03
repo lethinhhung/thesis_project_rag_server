@@ -108,8 +108,19 @@ def question(payload: QuestionPayload):
     messages=[
         {
             "role": "user",
-            "content": "Dựa trên các đoạn văn sau, hãy trả lời câu hỏi (hãy thêm các emoji để trực quan hơn, sử dụng dạng markdown để react-markdown định dạng): " + payload.query 
-            + "\n\n" + "\n".join([hit['fields']['text'] for hit in results['result']['hits']]),
+            "content": (
+                "### 📘 Yêu cầu:\n"
+                f"Trả lời câu hỏi sau bằng cách dựa trên các đoạn văn bên dưới. "
+                "Nếu thông tin không đủ, hãy trả lời dựa trên kiến thức của bạn và ghi rõ điều đó.\n\n"
+                f"**Câu hỏi:** {payload.query}\n\n"
+                "### 📚 Đoạn văn tham khảo:\n"
+                + "\n---\n".join([hit['fields']['text'] for hit in results['result']['hits']]) +
+                "\n\n"
+                "### ✏️ Ghi chú khi trả lời:\n"
+                "- Trình bày câu trả lời bằng [Markdown] để hệ thống `react-markdown` có thể hiển thị tốt.\n"
+                "- Thêm emoji phù hợp để làm nổi bật nội dung chính 🧠📌💡.\n"
+                "- Nếu câu trả lời không thể rút ra từ đoạn văn, hãy bắt đầu bằng câu: `⚠️ Không tìm thấy thông tin trong đoạn văn, câu trả lời được tạo từ kiến thức nền.`"
+            )
         }
     ],
     model="llama-3.3-70b-versatile",
