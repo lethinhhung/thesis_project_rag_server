@@ -6,6 +6,8 @@ class IngestPayload(BaseModel):
     userId: str
     document: str
     title: str
+    courseId: Optional[str] = None
+    courseTitle: Optional[str] = None
     
 
 class QuestionPayload(BaseModel):
@@ -24,3 +26,5 @@ class ChatCompletionPayload(BaseModel):
     model: Optional[str] = "deepseek-r1-distill-llama-70b"
     userId: str
     isUseKnowledge: Optional[bool] = False
+    courseId: Optional[str] = None
+    courseTitle: Optional[str] = None

@@ -42,7 +42,7 @@ if not pc.has_index(index_name):
         region="us-east-1",
         embed={
             "model":"llama-text-embed-v2",
-            "field_map":{"text": "chunk_text"}
+            "field_map":{"text": "text"}
         }
     )
 
@@ -101,6 +101,8 @@ def ingest(payload: IngestPayload):
                 "text": chunk,
                 'documentId': payload.documentId,
                 'title': payload.title,
+                'courseId': payload.courseId or "",
+                'courseTitle': payload.courseTitle or "",
             } for i, chunk in enumerate(chunks)
         ]
 
@@ -230,7 +232,7 @@ def create_chat_completion(payload: ChatCompletionPayload):
         # Clean the question for the query
         def clean_text(text: str) -> str:
             # 1. Chuyển về chữ thường
-            text = text.lower()
+            # text = text.lower()
 
             # 2. Chuẩn hóa Unicode (dùng NFC để ghép dấu)
             text = unicodedata.normalize("NFC", text)
@@ -246,16 +248,34 @@ def create_chat_completion(payload: ChatCompletionPayload):
 
 
         print(clean_text(payload.messages[len(payload.messages) - 1].content))
+
+
         # Search the dense index
+        query = {
+            "top_k": 15,
+            "inputs": {
+                'text': clean_text(payload.messages[len(payload.messages) - 1].content)
+            }
+        }
+        if payload.courseId:
+            query["filter"] = {"courseId": payload.courseId}
+
         results = index.search(
             namespace=payload.userId,
-            query={
-                "top_k": 15,
-                "inputs": {
-                    'text': clean_text(payload.messages[len(payload.messages) - 1].content)
-                }
-            }
+            query=query
         )
+        # results = index.search(
+        #     namespace=payload.userId,
+        #     query={
+        #         "top_k": 15,
+        #         "inputs": {
+        #             'text': clean_text(payload.messages[len(payload.messages) - 1].content)
+        #         },
+        #         "filter": {
+        #             "courseId": payload.courseId
+        #         } if payload.courseId else None
+        #     },
+        # )
 
         # Print the results
         # for hit in results['result']['hits']:
