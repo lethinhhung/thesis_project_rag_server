@@ -4,6 +4,8 @@ import requests
 from pinecone import Pinecone, ServerlessSpec
 from groq import Groq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+import re
+import unicodedata
 import os
 from dotenv import load_dotenv
 
@@ -60,7 +62,38 @@ def health_check():
 @app.post("/v1/ingest")
 def ingest(payload: IngestPayload):
         
-        chunks = text_splitter.split_text(payload.document)
+        #Clean the text
+        def clean_text(text: str) -> str:
+            # Loại bỏ đánh số trang
+            text = re.sub(r'Page \d+ of \d+', '', text)
+            
+            # Xóa các markdown đơn giản thừa
+            text = re.sub(r'\*\*|__|~~|```', '', text)
+            
+            # Loại bỏ khoảng trắng đầu cuối từng dòng
+            lines = [line.strip() for line in text.splitlines()]
+            
+            # Loại bỏ các dòng trống thừa (nhiều dòng trống thành 1 dòng trống)
+            cleaned_lines = []
+            blank_line = False
+            for line in lines:
+                if line == '':
+                    if not blank_line:
+                        cleaned_lines.append(line)
+                    blank_line = True
+                else:
+                    cleaned_lines.append(line)
+                    blank_line = False
+            
+            # Ghép lại với xuống dòng chuẩn
+            cleaned_text = '\n'.join(cleaned_lines)
+            
+            return cleaned_text.strip()
+        
+        # Clean the document text
+        cleaned_document = clean_text(payload.document)
+        
+        chunks = text_splitter.split_text(cleaned_document)
 
         records = [
             {
@@ -71,10 +104,6 @@ def ingest(payload: IngestPayload):
             } for i, chunk in enumerate(chunks)
         ]
 
-
-        # index.upsert_records(payload.userId, records)
-
-        # return {"status": "done"}
         # Batch size of 90 (below Pinecone's limit of 96)
         batch_size = 90
     
@@ -198,20 +227,39 @@ def create_chat_completion(payload: ChatCompletionPayload):
          
         messages_for_api = [message.model_dump() for message in payload.messages]
 
-          # Search the dense index
+        # Clean the question for the query
+        def clean_text(text: str) -> str:
+            # 1. Chuyển về chữ thường
+            text = text.lower()
+
+            # 2. Chuẩn hóa Unicode (dùng NFC để ghép dấu)
+            text = unicodedata.normalize("NFC", text)
+
+            # 3. Loại bỏ ký tự đặc biệt (giữ lại tiếng Việt và chữ số)
+            text = re.sub(r"[^\w\sàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩ"
+                        r"òóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", "", text)
+
+            # 4. Loại bỏ khoảng trắng dư thừa
+            text = re.sub(r"\s+", " ", text).strip()
+
+            return text
+
+
+        print(clean_text(payload.messages[len(payload.messages) - 1].content))
+        # Search the dense index
         results = index.search(
             namespace=payload.userId,
             query={
                 "top_k": 15,
                 "inputs": {
-                    'text': payload.messages[len(payload.messages) - 1].content
+                    'text': clean_text(payload.messages[len(payload.messages) - 1].content)
                 }
             }
         )
 
         # Print the results
-        for hit in results['result']['hits']:
-                print(f"id: {hit['_id']:<5} | documentId: {hit['fields']['documentId']} | title: {hit['fields']['title']} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
+        # for hit in results['result']['hits']:
+        #         print(f"id: {hit['_id']:<5} | documentId: {hit['fields']['documentId']} | title: {hit['fields']['title']} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
                 
 
         chat_completion = client.chat.completions.create(
