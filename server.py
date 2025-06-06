@@ -249,14 +249,23 @@ def create_chat_completion(payload: ChatCompletionPayload):
             return text
 
 
-        print(clean_text(payload.messages[len(payload.messages) - 1].content))
+        # Combine all previous user question into a single string for the query
+        combined_question = [message.model_dump() for message in payload.messages]
+        combined_question = [message for message in combined_question if message['role'] == 'user']
+        combined_question = [message['content'] for message in combined_question]
+        combined_question = " ".join(combined_question)
+        combined_question = clean_text(combined_question)
+        print(combined_question)
+
+
 
 
         # Search the dense index
         query = {
             "top_k": 15,
             "inputs": {
-                'text': clean_text(payload.messages[len(payload.messages) - 1].content)
+                # 'text': clean_text(payload.messages[len(payload.messages) - 1].content)
+                'text': combined_question
             }
         }
         if payload.courseId:
