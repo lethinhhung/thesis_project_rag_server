@@ -213,6 +213,8 @@ def create_chat_completion(payload: ChatCompletionPayload):
                             "### ✏️ Ghi chú khi trả lời:\n"
                             "- Trình bày câu trả lời bằng [Markdown] để hệ thống `react-markdown` có thể hiển thị tốt.\n"
                             "- Thêm emoji phù hợp để làm nổi bật nội dung chính 🧠📌💡.\n" 
+                            "- Nếu phù hợp, bổ sung **ví dụ minh họa** để tăng tính dễ hiểu.\n"
+                            "- Nếu nội dung có thể so sánh hoặc phân loại, hãy sử dụng **bảng Markdown** để trình bày.\n"
                         )
                      }
                 ],
@@ -301,6 +303,8 @@ def create_chat_completion(payload: ChatCompletionPayload):
                         "- Trình bày câu trả lời bằng [Markdown] để hệ thống `react-markdown` có thể hiển thị tốt.\n"
                         "- Đảm bảo mỗi thông tin được trích dẫn đều có tham chiếu đến **Document title** tương ứng (ví dụ: `[Python đại cương]` chỉ cần tựa của tài liệu gốc, không cần ghi đoạn văn nào, không nhắc lại 'Document title' và không nhắc lại tựa tài liệu nếu bị lặp).\n"
                         "- Thêm emoji phù hợp để làm nổi bật nội dung chính 🧠📌💡.\n"
+                        "- Nếu phù hợp, bổ sung **ví dụ minh họa** để tăng tính dễ hiểu.\n"
+                        "- Nếu nội dung có thể so sánh hoặc phân loại, hãy sử dụng **bảng Markdown** để trình bày.\n"
                         "- Nếu câu trả lời không thể rút ra từ đoạn văn, hãy bắt đầu bằng câu: `⚠️ Không tìm thấy thông tin trong đoạn văn, câu trả lời được tạo từ kiến thức nền.`\n"  
                     )
                 }
