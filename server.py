@@ -217,11 +217,162 @@ def create_chat_completion(payload: ChatCompletionPayload):
                         )
                      }
                 ],
-                model=payload.model or "deepseek-r1-distill-llama-70b"  # Use model from payload or default
+                model=payload.model or "deepseek-r1-distill-llama-70b",  # Use model from payload or default
                 # You can pass other parameters from payload to the API call if needed
                 # e.g., temperature=payload.temperature
+                temperature=0.5,
+                max_completion_tokens=1024,
+                top_p=1,
             )
-            return chat_completion.model_dump()
+
+            return chat_completion
+        
+        except Exception as e:
+            print(f"Error during chat completion: {e}") # For server-side logging
+            raise HTTPException(status_code=500, detail=str(e))
+        
+    else:
+         
+        messages_for_api = [message.model_dump() for message in payload.messages]
+
+        # Clean the question for the query
+        def clean_text(text: str) -> str:
+            # 1. Chuyển về chữ thường
+            # text = text.lower()
+
+            # 2. Chuẩn hóa Unicode (dùng NFC để ghép dấu)
+            text = unicodedata.normalize("NFC", text)
+
+            # 3. Loại bỏ ký tự đặc biệt (giữ lại tiếng Việt và chữ số)
+            text = re.sub(r"[^\w\sàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩ"
+                        r"òóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", "", text)
+
+            # 4. Loại bỏ khoảng trắng dư thừa
+            text = re.sub(r"\s+", " ", text).strip()
+
+            return text
+
+
+        # Combine all previous user question into a single string for the query
+        combined_question = [message.model_dump() for message in payload.messages]
+        combined_question = [message for message in combined_question if message['role'] == 'user']
+        combined_question = [message['content'] for message in combined_question]
+        combined_question = " ".join(combined_question)
+        combined_question = clean_text(combined_question)
+        print(combined_question)
+
+
+
+
+        # Search the dense index
+        query = {
+            "top_k": 15,
+            "inputs": {
+                # 'text': clean_text(payload.messages[len(payload.messages) - 1].content)
+                'text': combined_question
+            }
+        }
+        if payload.courseId:
+            query["filter"] = {"courseId": payload.courseId}
+
+        results = index.search(
+            namespace=payload.userId,
+            query=query
+        )
+        # results = index.search(
+        #     namespace=payload.userId,
+        #     query={
+        #         "top_k": 15,
+        #         "inputs": {
+        #             'text': clean_text(payload.messages[len(payload.messages) - 1].content)
+        #         },
+        #         "filter": {
+        #             "courseId": payload.courseId
+        #         } if payload.courseId else None
+        #     },
+        # )
+
+        # Print the results
+        # for hit in results['result']['hits']:
+        #         print(f"id: {hit['_id']:<5} | documentId: {hit['fields']['documentId']} | title: {hit['fields']['title']} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
+                
+
+        chat_completion = client.chat.completions.create(
+            messages=messages_for_api + [
+                {
+                    "role": "user",
+                    "content": (
+                        "### 📘 Yêu cầu:\n"
+                        f"Trả lời câu hỏi sau bằng cách dựa trên các đoạn văn bên dưới. "
+                        "Nếu thông tin không đủ, hãy trả lời dựa trên kiến thức của bạn và ghi rõ điều đó.\n\n"
+                        f"**Câu hỏi:** {payload.messages[len(payload.messages) - 1].content}\n\n"
+                        "### 📚 Đoạn văn tham khảo:\n"
+                        + "\n---\n".join([
+                            f"**Đoạn văn {i+1} (Document title: {hit['fields']['title']}):**\n"
+                            f"{hit['fields']['text']}\n"
+                            for i, hit in enumerate(results['result']['hits'])
+                        ]) +
+                        "### ✏️ Ghi chú khi trả lời:\n"
+                        "- Trình bày câu trả lời bằng [Markdown] để hệ thống `react-markdown` có thể hiển thị tốt.\n"
+                        "- Đảm bảo mỗi thông tin được trích dẫn đều có tham chiếu đến **Document title** tương ứng (ví dụ: `[Python đại cương]` chỉ cần tựa của tài liệu gốc, không cần ghi đoạn văn nào, không nhắc lại 'Document title' và không nhắc lại tựa tài liệu nếu bị lặp).\n"
+                        "- Thêm emoji phù hợp để làm nổi bật nội dung chính 🧠📌💡.\n"
+                        "- Nếu nội dung có thể so sánh hoặc phân loại, hãy sử dụng **bảng Markdown** để trình bày.\n"
+                        "- Nếu câu trả lời không thể rút ra từ đoạn văn, hãy bắt đầu bằng câu: `⚠️ Không tìm thấy thông tin trong đoạn văn, câu trả lời được tạo từ kiến thức nền.`\n"  
+                    )
+                }
+            ],
+            model=payload.model or "deepseek-r1-distill-llama-70b",
+        )
+
+        response_dict = chat_completion.model_dump()
+
+        response_dict["choices"][len(response_dict["choices"])-1]["message"]["documents"] = [
+            {
+                "id": hit["_id"],
+                "text": hit["fields"]["text"],
+                "documentId": hit["fields"]["documentId"],
+                "score": hit["_score"]
+            } for hit in results['result']['hits']
+        ]
+        return response_dict
+    
+
+@app.post("/v1/chat/streaming-completions")
+def create_chat_completion(payload: ChatCompletionPayload):
+
+    if not payload.isUseKnowledge:
+        try:
+            # Convert Pydantic Message models to dictionaries if payload.messages contains them
+            messages_for_api = [message.model_dump() for message in payload.messages]
+
+            last_message = messages_for_api[-1] if messages_for_api else None
+            # Remove the last message since we'll handle it separately
+            messages_for_api = messages_for_api[:-1]
+
+            chat_completion = client.chat.completions.create(
+                messages=messages_for_api + [
+                     {
+                        "role": "user",
+                        "content": (
+                            "### 📘 Yêu cầu:\n"
+                            f"Trả lời câu hỏi sau: {last_message['content']}\n\n"
+                            "### ✏️ Ghi chú khi trả lời:\n"
+                            "- Trình bày câu trả lời bằng [Markdown] để hệ thống `react-markdown` có thể hiển thị tốt.\n"
+                            "- Thêm emoji phù hợp để làm nổi bật nội dung chính 🧠📌💡.\n" 
+                            "- Nếu nội dung có thể so sánh hoặc phân loại, hãy sử dụng **bảng Markdown** để trình bày.\n"
+                        )
+                     }
+                ],
+                model=payload.model or "deepseek-r1-distill-llama-70b",  # Use model from payload or default
+                # You can pass other parameters from payload to the API call if needed
+                # e.g., temperature=payload.temperature
+                temperature=0.5,
+                max_completion_tokens=1024,
+                top_p=1,
+            )
+
+            return chat_completion
+        
         except Exception as e:
             print(f"Error during chat completion: {e}") # For server-side logging
             raise HTTPException(status_code=500, detail=str(e))
