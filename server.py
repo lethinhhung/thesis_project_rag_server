@@ -1,7 +1,5 @@
-from fastapi import FastAPI, Request, HTTPException
-from pydantic import BaseModel
-import requests
-from pinecone import Pinecone, ServerlessSpec
+from fastapi import FastAPI, HTTPException
+from pinecone import Pinecone
 from groq import Groq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import re
