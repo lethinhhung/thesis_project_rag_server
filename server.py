@@ -1,4 +1,6 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 from pinecone import Pinecone, ServerlessSpec
@@ -7,13 +9,34 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 import re
 import unicodedata
 import os
+from datetime import timedelta
 from dotenv import load_dotenv
 
-from models import IngestPayload, QuestionPayload, DeletePayload, ChatCompletionPayload
+from models import (
+    IngestPayload, QuestionPayload, DeletePayload, ChatCompletionPayload,
+    UserCreate, UserLogin, User, Token
+)
+from auth import (
+    authenticate_user, create_user, create_access_token, get_current_active_user,
+    ACCESS_TOKEN_EXPIRE_MINUTES
+)
 
 # Load environment variables
 load_dotenv()
-app = FastAPI()
+app = FastAPI(
+    title="RAG Server with OAuth2 Authentication",
+    description="A Retrieval Augmented Generation server with JWT-based user authentication",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Pinecone init
 pc = Pinecone(
@@ -59,9 +82,98 @@ def hello_world():
 def health_check():
         return {"status": "healthy"}
 
-@app.post("/v1/ingest")
-def ingest(payload: IngestPayload):
+# Authentication Endpoints
+@app.post("/v1/auth/register", response_model=Token)
+def register_user(user_data: UserCreate):
+    """Register a new user"""
+    try:
+        user = create_user(
+            email=user_data.email,
+            username=user_data.username,
+            password=user_data.password,
+            full_name=user_data.full_name
+        )
         
+        # Create access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.email}, expires_delta=access_token_expires
+        )
+        
+        return Token(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user=user
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration failed: {str(e)}"
+        )
+
+@app.post("/v1/auth/login", response_model=Token)
+def login_user(user_credentials: UserLogin):
+    """Login user with email and password"""
+    user = authenticate_user(user_credentials.email, user_credentials.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=user
+    )
+
+@app.post("/v1/auth/token", response_model=Token)
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    """OAuth2 compatible token endpoint (username/password form)"""
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=user
+    )
+
+@app.get("/v1/auth/me", response_model=User)
+def get_current_user_profile(current_user: User = Depends(get_current_active_user)):
+    """Get current user profile"""
+    return current_user
+
+@app.post("/v1/ingest")
+def ingest(payload: IngestPayload, current_user: User = Depends(get_current_active_user)):
+        # Ensure user can only ingest documents for their own userId
+        if payload.userId != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Cannot ingest documents for other users"
+            )
+            
         #Clean the text
         def clean_text(text: str) -> str:
             # Loại bỏ đánh số trang
@@ -117,7 +229,14 @@ def ingest(payload: IngestPayload):
         return {"status": "done", "chunks_processed": len(records)}
 
 @app.post("/v1/question")
-def question(payload: QuestionPayload):
+def question(payload: QuestionPayload, current_user: User = Depends(get_current_active_user)):
+    # Ensure user can only query their own documents
+    if payload.userId != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Cannot query documents for other users"
+        )
+    
     # Define the query
 
     # Search the dense index
@@ -176,7 +295,13 @@ def question(payload: QuestionPayload):
     return response_dict
 
 @app.post("/v1/delete-document")
-def delete_document(payload: DeletePayload):
+def delete_document(payload: DeletePayload, current_user: User = Depends(get_current_active_user)):
+    # Ensure user can only delete their own documents
+    if payload.userId != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Cannot delete documents for other users"
+        )
 
     ids_to_delete = list(index.list(prefix=payload.documentId, namespace=payload.userId))
 
@@ -192,7 +317,13 @@ def delete_document(payload: DeletePayload):
     return {"deleted_ids": ids_to_delete}
 
 @app.post("/v1/chat/completions")
-def create_chat_completion(payload: ChatCompletionPayload):
+def create_chat_completion(payload: ChatCompletionPayload, current_user: User = Depends(get_current_active_user)):
+    # Ensure user can only access their own chat completions
+    if payload.userId != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Cannot access chat completions for other users"
+        )
 
     if not payload.isUseKnowledge:
         try:
@@ -338,7 +469,13 @@ def create_chat_completion(payload: ChatCompletionPayload):
     
 
 @app.post("/v1/chat/streaming-completions")
-def create_chat_completion(payload: ChatCompletionPayload):
+def create_streaming_chat_completion(payload: ChatCompletionPayload, current_user: User = Depends(get_current_active_user)):
+    # Ensure user can only access their own streaming chat completions
+    if payload.userId != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Cannot access streaming chat completions for other users"
+        )
 
     if not payload.isUseKnowledge:
         try:
