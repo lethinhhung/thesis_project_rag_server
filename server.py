@@ -1,15 +1,12 @@
 from fastapi import FastAPI, Request, HTTPException
-from pydantic import BaseModel
-import requests
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 from groq import Groq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import re
-import unicodedata
 import os
 from dotenv import load_dotenv
 
 from models import IngestPayload, QuestionPayload, DeletePayload, ChatCompletionPayload
+from utils import clean_document_text, clean_vietnamese_text
 
 # Load environment variables
 load_dotenv()
@@ -62,36 +59,8 @@ def health_check():
 @app.post("/v1/ingest")
 def ingest(payload: IngestPayload):
         
-        #Clean the text
-        def clean_text(text: str) -> str:
-            # Loại bỏ đánh số trang
-            text = re.sub(r'Page \d+ of \d+', '', text)
-            
-            # Xóa các markdown đơn giản thừa
-            text = re.sub(r'\*\*|__|~~|```', '', text)
-            
-            # Loại bỏ khoảng trắng đầu cuối từng dòng
-            lines = [line.strip() for line in text.splitlines()]
-            
-            # Loại bỏ các dòng trống thừa (nhiều dòng trống thành 1 dòng trống)
-            cleaned_lines = []
-            blank_line = False
-            for line in lines:
-                if line == '':
-                    if not blank_line:
-                        cleaned_lines.append(line)
-                    blank_line = True
-                else:
-                    cleaned_lines.append(line)
-                    blank_line = False
-            
-            # Ghép lại với xuống dòng chuẩn
-            cleaned_text = '\n'.join(cleaned_lines)
-            
-            return cleaned_text.strip()
-        
         # Clean the document text
-        cleaned_document = clean_text(payload.document)
+        cleaned_document = clean_document_text(payload.document)
         
         chunks = text_splitter.split_text(cleaned_document)
 
@@ -146,8 +115,6 @@ def question(payload: QuestionPayload):
                 "Nếu thông tin không đủ, hãy trả lời dựa trên kiến thức của bạn và ghi rõ điều đó.\n\n"
                 f"**Câu hỏi:** {payload.query}\n\n"
                 "### 📚 Đoạn văn tham khảo:\n"
-                # + "\n---\n".join([hit['fields']['text'] for hit in results['result']['hits']]) +
-                # "\n\n"
                 + "\n---\n".join([
                      f"**Đoạn văn {i+1} (Document title: {hit['fields']['title']}):**\n"
                      f"{hit['fields']['text']}\n"
@@ -235,22 +202,7 @@ def create_chat_completion(payload: ChatCompletionPayload):
          
         messages_for_api = [message.model_dump() for message in payload.messages]
 
-        # Clean the question for the query
-        def clean_text(text: str) -> str:
-            # 1. Chuyển về chữ thường
-            # text = text.lower()
-
-            # 2. Chuẩn hóa Unicode (dùng NFC để ghép dấu)
-            text = unicodedata.normalize("NFC", text)
-
-            # 3. Loại bỏ ký tự đặc biệt (giữ lại tiếng Việt và chữ số)
-            text = re.sub(r"[^\w\sàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩ"
-                        r"òóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", "", text)
-
-            # 4. Loại bỏ khoảng trắng dư thừa
-            text = re.sub(r"\s+", " ", text).strip()
-
-            return text
+        # Clean the question for the query using utility function
 
 
         # Combine all previous user question into a single string for the query
@@ -258,7 +210,7 @@ def create_chat_completion(payload: ChatCompletionPayload):
         combined_question = [message for message in combined_question if message['role'] == 'user']
         combined_question = [message['content'] for message in combined_question]
         combined_question = " ".join(combined_question)
-        combined_question = clean_text(combined_question)
+        combined_question = clean_vietnamese_text(combined_question)
         print(combined_question)
 
 
@@ -268,7 +220,6 @@ def create_chat_completion(payload: ChatCompletionPayload):
         query = {
             "top_k": 15,
             "inputs": {
-                # 'text': clean_text(payload.messages[len(payload.messages) - 1].content)
                 'text': combined_question
             }
         }
@@ -279,23 +230,6 @@ def create_chat_completion(payload: ChatCompletionPayload):
             namespace=payload.userId,
             query=query
         )
-        # results = index.search(
-        #     namespace=payload.userId,
-        #     query={
-        #         "top_k": 15,
-        #         "inputs": {
-        #             'text': clean_text(payload.messages[len(payload.messages) - 1].content)
-        #         },
-        #         "filter": {
-        #             "courseId": payload.courseId
-        #         } if payload.courseId else None
-        #     },
-        # )
-
-        # Print the results
-        # for hit in results['result']['hits']:
-        #         print(f"id: {hit['_id']:<5} | documentId: {hit['fields']['documentId']} | title: {hit['fields']['title']} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
-                
 
         chat_completion = client.chat.completions.create(
             messages=messages_for_api + [
@@ -338,7 +272,7 @@ def create_chat_completion(payload: ChatCompletionPayload):
     
 
 @app.post("/v1/chat/streaming-completions")
-def create_chat_completion(payload: ChatCompletionPayload):
+def create_streaming_chat_completion(payload: ChatCompletionPayload):
 
     if not payload.isUseKnowledge:
         try:
@@ -381,22 +315,7 @@ def create_chat_completion(payload: ChatCompletionPayload):
          
         messages_for_api = [message.model_dump() for message in payload.messages]
 
-        # Clean the question for the query
-        def clean_text(text: str) -> str:
-            # 1. Chuyển về chữ thường
-            # text = text.lower()
-
-            # 2. Chuẩn hóa Unicode (dùng NFC để ghép dấu)
-            text = unicodedata.normalize("NFC", text)
-
-            # 3. Loại bỏ ký tự đặc biệt (giữ lại tiếng Việt và chữ số)
-            text = re.sub(r"[^\w\sàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩ"
-                        r"òóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", "", text)
-
-            # 4. Loại bỏ khoảng trắng dư thừa
-            text = re.sub(r"\s+", " ", text).strip()
-
-            return text
+        # Clean the question for the query using utility function
 
 
         # Combine all previous user question into a single string for the query
@@ -404,7 +323,7 @@ def create_chat_completion(payload: ChatCompletionPayload):
         combined_question = [message for message in combined_question if message['role'] == 'user']
         combined_question = [message['content'] for message in combined_question]
         combined_question = " ".join(combined_question)
-        combined_question = clean_text(combined_question)
+        combined_question = clean_vietnamese_text(combined_question)
         print(combined_question)
 
 
@@ -414,7 +333,6 @@ def create_chat_completion(payload: ChatCompletionPayload):
         query = {
             "top_k": 15,
             "inputs": {
-                # 'text': clean_text(payload.messages[len(payload.messages) - 1].content)
                 'text': combined_question
             }
         }
@@ -425,23 +343,6 @@ def create_chat_completion(payload: ChatCompletionPayload):
             namespace=payload.userId,
             query=query
         )
-        # results = index.search(
-        #     namespace=payload.userId,
-        #     query={
-        #         "top_k": 15,
-        #         "inputs": {
-        #             'text': clean_text(payload.messages[len(payload.messages) - 1].content)
-        #         },
-        #         "filter": {
-        #             "courseId": payload.courseId
-        #         } if payload.courseId else None
-        #     },
-        # )
-
-        # Print the results
-        # for hit in results['result']['hits']:
-        #         print(f"id: {hit['_id']:<5} | documentId: {hit['fields']['documentId']} | title: {hit['fields']['title']} | score: {round(hit['_score'], 2):<5} | text: {hit['fields']['text']:<50}")
-                
 
         chat_completion = client.chat.completions.create(
             messages=messages_for_api + [
