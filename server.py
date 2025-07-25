@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 import requests
 from pinecone import Pinecone, ServerlessSpec
@@ -8,8 +9,15 @@ import re
 import unicodedata
 import os
 from dotenv import load_dotenv
+from datetime import timedelta
 
-from models import IngestPayload, QuestionPayload, DeletePayload, ChatCompletionPayload
+from typing import List
+from models import (
+    IngestPayload, QuestionPayload, DeletePayload, ChatCompletionPayload,
+    UserCreate, User, Token, RefreshTokenRequest, LoginRequest
+)
+from auth import AuthService, ACCESS_TOKEN_EXPIRE_MINUTES
+from dependencies import RequireAuth, RequireAdmin, OptionalAuth, validate_user_access
 
 # Load environment variables
 load_dotenv()
@@ -50,74 +58,220 @@ if not pc.has_index(index_name):
 index = pc.Index(index_name)
 
 
+# Authentication endpoints
+@app.post("/auth/register", response_model=User, status_code=status.HTTP_201_CREATED)
+def register_user(user_data: UserCreate):
+    """
+    Register a new user
+    """
+    try:
+        db_user = AuthService.create_user(user_data)
+        return User(
+            id=db_user.id,
+            username=db_user.username,
+            email=db_user.email,
+            full_name=db_user.full_name,
+            is_active=db_user.is_active,
+            created_at=db_user.created_at,
+            updated_at=db_user.updated_at
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration failed: {str(e)}"
+        )
+
+@app.post("/auth/token", response_model=Token)
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    OAuth2 compatible token login, get an access token for future requests
+    """
+    user = AuthService.authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is disabled"
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = AuthService.create_access_token(
+        data={
+            "sub": user.username,
+            "user_id": user.id,
+            "scopes": form_data.scopes.split() if form_data.scopes else []
+        },
+        expires_delta=access_token_expires
+    )
+    
+    refresh_token = AuthService.create_refresh_token(user.id)
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "refresh_token": refresh_token
+    }
+
+@app.post("/auth/refresh", response_model=Token)
+def refresh_token(refresh_request: RefreshTokenRequest):
+    """
+    Refresh access token using refresh token
+    """
+    token_data = AuthService.refresh_access_token(refresh_request.refresh_token)
+    if not token_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    return token_data
+
+@app.post("/auth/logout")
+def logout(refresh_request: RefreshTokenRequest, current_user: User = RequireAuth):
+    """
+    Logout user by revoking refresh token
+    """
+    success = AuthService.revoke_refresh_token(refresh_request.refresh_token)
+    return {"message": "Logged out successfully" if success else "Token not found"}
+
+@app.post("/auth/logout-all")
+def logout_all(current_user: User = RequireAuth):
+    """
+    Logout from all devices by revoking all refresh tokens
+    """
+    revoked_count = AuthService.revoke_all_user_tokens(current_user.id)
+    return {"message": f"Logged out from {revoked_count} devices"}
+
+@app.get("/auth/me", response_model=User)
+def get_current_user_info(current_user: User = RequireAuth):
+    """
+    Get current user information
+    """
+    return current_user
+
+@app.get("/auth/users", response_model=List[User])  
+def list_users(current_user: User = RequireAdmin):
+    """
+    List all users (admin only)
+    """
+    from auth import fake_users_db
+    return [
+        User(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            full_name=user.full_name,
+            is_active=user.is_active,
+            created_at=user.created_at,
+            updated_at=user.updated_at
+        )
+        for user in fake_users_db.values()
+    ]
+
+@app.get("/auth/users/{user_id}", response_model=User)
+def get_user_by_id(user_id: str, current_user: User = RequireAdmin):
+    """
+    Get user by ID (admin only)
+    """
+    user = AuthService.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    return User(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
+
 # Define endpoints
 @app.get("/")
 def hello_world():
-    return {"message": "Hello World!"}
+    return {"message": "Hello World! RAG Server with OAuth2 Authentication"}
 
 @app.head("/v1/keep-alive")
 def health_check():
         return {"status": "healthy"}
 
 @app.post("/v1/ingest")
-def ingest(payload: IngestPayload):
-        
-        #Clean the text
-        def clean_text(text: str) -> str:
-            # Loại bỏ đánh số trang
-            text = re.sub(r'Page \d+ of \d+', '', text)
-            
-            # Xóa các markdown đơn giản thừa
-            text = re.sub(r'\*\*|__|~~|```', '', text)
-            
-            # Loại bỏ khoảng trắng đầu cuối từng dòng
-            lines = [line.strip() for line in text.splitlines()]
-            
-            # Loại bỏ các dòng trống thừa (nhiều dòng trống thành 1 dòng trống)
-            cleaned_lines = []
-            blank_line = False
-            for line in lines:
-                if line == '':
-                    if not blank_line:
-                        cleaned_lines.append(line)
-                    blank_line = True
-                else:
-                    cleaned_lines.append(line)
-                    blank_line = False
-            
-            # Ghép lại với xuống dòng chuẩn
-            cleaned_text = '\n'.join(cleaned_lines)
-            
-            return cleaned_text.strip()
-        
-        # Clean the document text
-        cleaned_document = clean_text(payload.document)
-        
-        chunks = text_splitter.split_text(cleaned_document)
-
-        records = [
-            {
-                "id": f"{payload.documentId}-{i}",
-                "text": chunk,
-                'documentId': payload.documentId,
-                'title': payload.title,
-                'courseId': payload.courseId or "",
-                'courseTitle': payload.courseTitle or "",
-            } for i, chunk in enumerate(chunks)
-        ]
-
-        # Batch size of 90 (below Pinecone's limit of 96)
-        batch_size = 90
+def ingest(payload: IngestPayload, current_user: User = RequireAuth):
+    # Validate user access
+    validate_user_access(current_user, payload.userId)
     
-        # Split records into batches and upsert
-        for i in range(0, len(records), batch_size):
-            batch = records[i:i + batch_size]
-            index.upsert_records(payload.userId, batch)
+    # Clean the text
+    def clean_text(text: str) -> str:
+        # Loại bỏ đánh số trang
+        text = re.sub(r'Page \d+ of \d+', '', text)
+        
+        # Xóa các markdown đơn giản thừa
+        text = re.sub(r'\*\*|__|~~|```', '', text)
+        
+        # Loại bỏ khoảng trắng đầu cuối từng dòng
+        lines = [line.strip() for line in text.splitlines()]
+        
+        # Loại bỏ các dòng trống thừa (nhiều dòng trống thành 1 dòng trống)
+        cleaned_lines = []
+        blank_line = False
+        for line in lines:
+            if line == '':
+                if not blank_line:
+                    cleaned_lines.append(line)
+                blank_line = True
+            else:
+                cleaned_lines.append(line)
+                blank_line = False
+        
+        # Ghép lại với xuống dòng chuẩn
+        cleaned_text = '\n'.join(cleaned_lines)
+        
+        return cleaned_text.strip()
+    
+    # Clean the document text
+    cleaned_document = clean_text(payload.document)
+    
+    chunks = text_splitter.split_text(cleaned_document)
 
-        return {"status": "done", "chunks_processed": len(records)}
+    records = [
+        {
+            "id": f"{payload.documentId}-{i}",
+            "text": chunk,
+            'documentId': payload.documentId,
+            'title': payload.title,
+            'courseId': payload.courseId or "",
+            'courseTitle': payload.courseTitle or "",
+        } for i, chunk in enumerate(chunks)
+    ]
+
+    # Batch size of 90 (below Pinecone's limit of 96)
+    batch_size = 90
+
+    # Split records into batches and upsert
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+        index.upsert_records(payload.userId, batch)
+
+    return {"status": "done", "chunks_processed": len(records)}
 
 @app.post("/v1/question")
-def question(payload: QuestionPayload):
+def question(payload: QuestionPayload, current_user: User = RequireAuth):
+    # Validate user access
+    validate_user_access(current_user, payload.userId)
     # Define the query
 
     # Search the dense index
@@ -176,7 +330,9 @@ def question(payload: QuestionPayload):
     return response_dict
 
 @app.post("/v1/delete-document")
-def delete_document(payload: DeletePayload):
+def delete_document(payload: DeletePayload, current_user: User = RequireAuth):
+    # Validate user access
+    validate_user_access(current_user, payload.userId)
 
     ids_to_delete = list(index.list(prefix=payload.documentId, namespace=payload.userId))
 
@@ -192,7 +348,9 @@ def delete_document(payload: DeletePayload):
     return {"deleted_ids": ids_to_delete}
 
 @app.post("/v1/chat/completions")
-def create_chat_completion(payload: ChatCompletionPayload):
+def create_chat_completion(payload: ChatCompletionPayload, current_user: User = RequireAuth):
+    # Validate user access
+    validate_user_access(current_user, payload.userId)
 
     if not payload.isUseKnowledge:
         try:
@@ -338,7 +496,9 @@ def create_chat_completion(payload: ChatCompletionPayload):
     
 
 @app.post("/v1/chat/streaming-completions")
-def create_chat_completion(payload: ChatCompletionPayload):
+def create_streaming_chat_completion(payload: ChatCompletionPayload, current_user: User = RequireAuth):
+    # Validate user access
+    validate_user_access(current_user, payload.userId)
 
     if not payload.isUseKnowledge:
         try:
