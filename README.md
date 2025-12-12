@@ -1,4 +1,4 @@
-# RAG Server Python (Ongoing)
+# RAG Server Python
 
 A Retrieval Augmented Generation (RAG) server implementation using Python for enhanced question-answering capabilities and document processing.
 
